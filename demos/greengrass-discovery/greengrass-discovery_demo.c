@@ -522,16 +522,23 @@ static int connectToServer( NetworkContext_t * pNetworkContext,
     OpensslCredentials_t opensslCredentials;
     uint16_t nextRetryBackOff;
 
+    memset( pNetworkContext, 0, sizeof( NetworkContext_t ) );
+    
     /* Initialize credentials for establishing TLS session. */
     memset( &opensslCredentials, 0, sizeof( OpensslCredentials_t ) );
     opensslCredentials.pRootCaPath = pRootCaPath;
+
+    /* If #CLIENT_USERNAME is defined, username/password is used for authenticating
+     * the client. */
+    opensslCredentials.pClientCertPath = CLIENT_CERT_PATH;
+    opensslCredentials.pPrivateKeyPath = CLIENT_PRIVATE_KEY_PATH;
 
     /* AWS IoT requires devices to send the Server Name Indication (SNI)
      * extension to the Transport Layer Security (TLS) protocol and provide
      * the complete endpoint address in the host_name field. Details about
      * SNI for AWS IoT can be found in the link below.
      * https://docs.aws.amazon.com/iot/latest/developerguide/transport-security.html */
-    opensslCredentials.sniHostName = AWS_IOT_ENDPOINT;
+    //opensslCredentials.sniHostName = AWS_IOT_ENDPOINT;
 
     /* Initialize reconnect attempts and interval */
     BackoffAlgorithm_InitializeParams( &reconnectParams,
