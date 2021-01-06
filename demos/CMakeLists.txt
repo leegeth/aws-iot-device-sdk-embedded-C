@@ -115,6 +115,9 @@ foreach(demo_dir IN LISTS demo_dirs)
     endif()
 endforeach()
 
+# Add greengrass-discovery demo.
+add_subdirectory("greengrass-discovery")
+
 # Filter demos based on what packages or library exist.
 if(${LIB_RT} STREQUAL "LIB_RT-NOTFOUND")
     set(librt_demos
