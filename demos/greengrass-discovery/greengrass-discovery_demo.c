@@ -100,8 +100,10 @@
 
 /* Path to store the GG Core certificate. */
 #ifndef GG_ROOT_CA_PATH
-    #define GG_ROOT_CA_PATH    "certificates/GGCoreCertificate"
+    #define GG_ROOT_CA_PATH    "certificates/GGCoreCertificate.crt"
 #endif
+
+#define GG_ROOT_CA_PATH_TEST "certificates/GGCoreCertificateWithoutModification"
 
 /**
  * @brief The length of the AWS IoT Endpoint.
@@ -387,7 +389,7 @@ static void prvConvertCertificateJSONToString( char * certbuf,
     fd = fopen( GG_ROOT_CA_PATH, "w" );
 
     /* Write to the file. */
-    fwrite( certbuf, 1, ulWriteIndex, fd );
+    fwrite( certbuf, sizeof(char), ulWriteIndex, fd );
 
     fclose( fd );
 }
@@ -427,6 +429,7 @@ static int32_t prvGGDGetCertificate( char * pcJSONFile,
         prvConvertCertificateJSONToString( certbuf, valueLength );
         *pucCert = GG_ROOT_CA_PATH;
         returnStatus = EXIT_SUCCESS;
+        free(certbuf);
     }
 
     return returnStatus;
@@ -521,12 +524,10 @@ static int connectToServer( NetworkContext_t * pNetworkContext,
     BackoffAlgorithmContext_t reconnectParams;
     OpensslCredentials_t opensslCredentials;
     uint16_t nextRetryBackOff;
-
-    memset( pNetworkContext, 0, sizeof( NetworkContext_t ) );
     
     /* Initialize credentials for establishing TLS session. */
     memset( &opensslCredentials, 0, sizeof( OpensslCredentials_t ) );
-    opensslCredentials.pRootCaPath = pRootCaPath;
+    opensslCredentials.pRootCaPath = GG_ROOT_CA_PATH;
 
     /* If #CLIENT_USERNAME is defined, username/password is used for authenticating
      * the client. */
@@ -699,6 +700,10 @@ int main( int argc,
     /**********************MQTT Operations *********************************/
     if( returnStatus == EXIT_SUCCESS )
     {
+        memset(&networkContext,0, sizeof(networkContext));
+        /* Set the pParams member of the network context with desired transport. */
+        networkContext.pParams = &opensslParams;
+
         returnStatus = connectToServer( &networkContext,
                                         &xServerInfo,
                                         OpensslCredentials.pRootCaPath );

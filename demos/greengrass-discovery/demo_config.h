@@ -95,7 +95,7 @@
  *
  * #define CLIENT_CERT_PATH                  "...insert here..."
  */
-#define CLIENT_CERT_PATH                  "/home/ubuntu/certificates/MyIOTThingTest5_cert_pem_file"
+#define CLIENT_CERT_PATH                  "/mnt/c/certifcates/MyIOTThingTest5_cert_pem_file"
 
 /**
  * @brief Path of the file containing the client's private key for
@@ -106,7 +106,7 @@
  *
  * #define CLIENT_PRIVATE_KEY_PATH           "...insert here..."
  */
-#define CLIENT_PRIVATE_KEY_PATH           "/home/ubuntu/certificates/MyIOTThingTest5_private_key_pem_file"
+#define CLIENT_PRIVATE_KEY_PATH           "/mnt/c/certifcates/MyIOTThingTest5_private_key_pem_file"
 
 #define IOT_THING_NAME   "MyIOTThingTest5"
 
@@ -118,7 +118,7 @@
 /**
  * @brief Transport timeout in milliseconds for transport send and receive.
  */
-#define TRANSPORT_SEND_RECV_TIMEOUT_MS    ( 1000 )
+#define TRANSPORT_SEND_RECV_TIMEOUT_MS    ( 5000 )
 
 /**
  * @brief The length in bytes of the user buffer.
