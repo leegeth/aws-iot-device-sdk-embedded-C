@@ -108,6 +108,11 @@
  */
 #define CLIENT_PRIVATE_KEY_PATH           "/mnt/c/certifcates/MyIOTThingTest5_private_key_pem_file"
 
+/**
+ * @brief Predefined thing name.
+ *
+ * This is the example predefine thing name and could be compiled in ROM code.
+ */
 #define IOT_THING_NAME   "MyIOTThingTest5"
 
 /**

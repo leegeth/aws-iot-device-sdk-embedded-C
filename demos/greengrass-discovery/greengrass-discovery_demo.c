@@ -185,6 +185,17 @@
  */
 static uint8_t userBuffer[ USER_BUFFER_LENGTH ];
 
+/**
+ * @brief Server information to which a TLS connection needs to be established.
+ */
+static ServerInfo_t serverInfo;
+
+/**
+ * @brief The root CA file path.
+ */
+static char * rootCAFilePath;
+
+
 /*-----------------------------------------------------------*/
 
 /* Each compilation unit must define the NetworkContext struct. */
@@ -195,52 +206,20 @@ struct NetworkContext
 
 /*-----------------------------------------------------------*/
 
-/**
- * @brief Connect to HTTP server with reconnection retries.
- *
- * @param[out] pNetworkContext The output parameter to return the created network context.
- *
- * @return EXIT_FAILURE on failure; EXIT_SUCCESS on successful connection.
- */
-static int32_t connectToServerHTTP( NetworkContext_t * pNetworkContext );
-
-/**
- * @brief Send an HTTP request based on a specified method and path, then
- * print the response received from the server.
- *
- * @param[in] pTransportInterface The transport interface for making network calls.
- * @param[in] pMethod The HTTP request method.
- * @param[in] methodLen The length of the HTTP request method.
- * @param[in] pPath The Request-URI to the objects of interest.
- * @param[in] pathLen The length of the Request-URI.
- *
- * @return EXIT_FAILURE on failure; EXIT_SUCCESS on success.
- */
-static int32_t sendHttpRequest( const TransportInterface_t * pTransportInterface,
-                                const char * pMethod,
-                                size_t methodLen,
-                                const char * pPath,
-                                size_t pathLen,
-                                char ** ppcJSONFile,
-                                uint32_t * plJSONFileLength );
-
-/*-----------------------------------------------------------*/
-
-static int32_t connectToServerHTTP( NetworkContext_t * pNetworkContext )
+/******************** TLS funtions ****************************/
+static int32_t connectToServer( NetworkContext_t * pNetworkContext )
 {
     int32_t returnStatus = EXIT_FAILURE;
     /* Status returned by OpenSSL transport implementation. */
     OpensslStatus_t opensslStatus;
     /* Credentials to establish the TLS connection. */
     OpensslCredentials_t opensslCredentials;
-    /* Information about the server to send the HTTP requests. */
-    ServerInfo_t serverInfo;
 
     /* Initialize TLS credentials. */
     ( void ) memset( &opensslCredentials, 0, sizeof( opensslCredentials ) );
     opensslCredentials.pClientCertPath = CLIENT_CERT_PATH;
     opensslCredentials.pPrivateKeyPath = CLIENT_PRIVATE_KEY_PATH;
-    opensslCredentials.pRootCaPath = ROOT_CA_CERT_PATH;
+    opensslCredentials.pRootCaPath = rootCAFilePath;
     opensslCredentials.sniHostName = AWS_IOT_ENDPOINT;
 
     /* ALPN is required when communicating to AWS IoT Core over port 443 through HTTP. */
@@ -250,18 +229,13 @@ static int32_t connectToServerHTTP( NetworkContext_t * pNetworkContext )
         opensslCredentials.alpnProtosLen = strlen( IOT_CORE_ALPN_PROTOCOL_NAME );
     }
 
-    /* Initialize server information. */
-    serverInfo.pHostName = AWS_IOT_ENDPOINT;
-    serverInfo.hostNameLength = AWS_IOT_ENDPOINT_LENGTH;
-    serverInfo.port = AWS_HTTPS_PORT;
-
     /* Establish a TLS session with the HTTP server. This example connects
      * to the HTTP server as specified in AWS_IOT_ENDPOINT and AWS_HTTPS_PORT
      * in demo_config.h. */
     LogInfo( ( "Establishing a TLS session to %.*s:%d.",
-               ( int32_t ) AWS_IOT_ENDPOINT_LENGTH,
-               AWS_IOT_ENDPOINT,
-               AWS_HTTPS_PORT ) );
+               ( int32_t ) serverInfo.hostNameLength,
+               serverInfo.pHostName,
+               serverInfo.port ) );
     opensslStatus = Openssl_Connect( pNetworkContext,
                                      &serverInfo,
                                      &opensslCredentials,
@@ -281,6 +255,8 @@ static int32_t connectToServerHTTP( NetworkContext_t * pNetworkContext )
 }
 
 /*-----------------------------------------------------------*/
+
+/******************** HTTP funtions ****************************/
 
 static int32_t sendHttpRequest( const TransportInterface_t * pTransportInterface,
                                 const char * pMethod,
@@ -374,7 +350,7 @@ static int32_t sendHttpRequest( const TransportInterface_t * pTransportInterface
                    ( int32_t ) response.bodyLen, response.pBody ) );
 
         /* Set the output parameters. */
-        *ppcJSONFile = response.pBody;
+        *ppcJSONFile = ( char * ) response.pBody;
         *plJSONFileLength = response.bodyLen;
     }
     else
@@ -396,12 +372,15 @@ static int32_t sendHttpRequest( const TransportInterface_t * pTransportInterface
 
 /*-----------------------------------------------------------*/
 
-static void prvConvertCertificateJSONToString( char * certbuf,
-                                               size_t certlen )
+/******************** JSON funtions ****************************/
+
+static void prvStoreCertificateinFile( char * certbuf,
+                                       size_t certlen )
 {
     FILE * fd;
     uint32_t ulReadIndex = 1, ulWriteIndex = 0;
 
+    /* Convert 2 character long "\n" from JSON to a single character '\n'. */
     do
     {
         if( ( certbuf[ ulReadIndex - ( uint32_t ) 1 ] == '\\' ) &&
@@ -420,19 +399,27 @@ static void prvConvertCertificateJSONToString( char * certbuf,
         ulWriteIndex++;
     } while( ulReadIndex < certlen );
 
+    /* Write the certificate in a file at location GG_ROOT_CA_PATH. */
     fd = fopen( GG_ROOT_CA_PATH, "w" );
 
-    /* Write to the file. */
-    fwrite( certbuf, sizeof( char ), ulWriteIndex, fd );
+    if( fd != NULL )
+    {
+        /* Write to the file. */
+        fwrite( certbuf, sizeof( char ), ulWriteIndex, fd );
 
-    fclose( fd );
+        /* Close file. */
+        fclose( fd );
+    }
+    else
+    {
+        LogError( ( "Writing certificate to the file %s failed.", GG_ROOT_CA_PATH ) );
+    }
 }
 
 /*-----------------------------------------------------------*/
 
 static int32_t prvGGDGetCertificate( char * pcJSONFile,
-                                     const uint32_t ulJSONFileSize,
-                                     char ** pucCert )
+                                     const uint32_t ulJSONFileSize )
 {
     int32_t returnStatus = EXIT_FAILURE;
 
@@ -460,10 +447,9 @@ static int32_t prvGGDGetCertificate( char * pcJSONFile,
         memset( certbuf, 0x00, valueLength + 1 );
         /* strip trailing \n character. */
         memcpy( certbuf, value, valueLength );
-        prvConvertCertificateJSONToString( certbuf, valueLength );
-        *pucCert = GG_ROOT_CA_PATH;
-        returnStatus = EXIT_SUCCESS;
+        prvStoreCertificateinFile( certbuf, valueLength );
         free( certbuf );
+        returnStatus = EXIT_SUCCESS;
     }
 
     return returnStatus;
@@ -527,7 +513,7 @@ static int32_t prvGGDGetIPOnInterface( char * pcJSONFile,
     if( returnStatus == EXIT_SUCCESS )
     {
         LogInfo( ( "The Greengrass core address obtained is %.*s:%d",
-                   pucTargetInterface->hostNameLength,
+                   ( int ) pucTargetInterface->hostNameLength,
                    pucTargetInterface->pHostName,
                    pucTargetInterface->port ) );
     }
@@ -541,179 +527,7 @@ static int32_t prvGGDGetIPOnInterface( char * pcJSONFile,
 
 /*-----------------------------------------------------------*/
 
-static uint32_t generateRandomNumber()
-{
-    return( rand() );
-}
-
-/*-----------------------------------------------------------*/
-
-static int connectToServer( NetworkContext_t * pNetworkContext,
-                            ServerInfo_t * pServerInfo,
-                            char * pRootCaPath )
-{
-    int returnStatus = EXIT_SUCCESS;
-    BackoffAlgorithmStatus_t backoffAlgStatus = BackoffAlgorithmSuccess;
-    OpensslStatus_t opensslStatus = OPENSSL_SUCCESS;
-    BackoffAlgorithmContext_t reconnectParams;
-    OpensslCredentials_t opensslCredentials;
-    uint16_t nextRetryBackOff;
-
-    /* Initialize credentials for establishing TLS session. */
-    memset( &opensslCredentials, 0, sizeof( OpensslCredentials_t ) );
-    opensslCredentials.pRootCaPath = GG_ROOT_CA_PATH;
-
-    /* If #CLIENT_USERNAME is defined, username/password is used for authenticating
-     * the client. */
-    opensslCredentials.pClientCertPath = CLIENT_CERT_PATH;
-    opensslCredentials.pPrivateKeyPath = CLIENT_PRIVATE_KEY_PATH;
-
-    /* AWS IoT requires devices to send the Server Name Indication (SNI)
-     * extension to the Transport Layer Security (TLS) protocol and provide
-     * the complete endpoint address in the host_name field. Details about
-     * SNI for AWS IoT can be found in the link below.
-     * https://docs.aws.amazon.com/iot/latest/developerguide/transport-security.html */
-    opensslCredentials.sniHostName = pServerInfo->pHostName;
-
-    /* Initialize reconnect attempts and interval */
-    BackoffAlgorithm_InitializeParams( &reconnectParams,
-                                       CONNECTION_RETRY_BACKOFF_BASE_MS,
-                                       CONNECTION_RETRY_MAX_BACKOFF_DELAY_MS,
-                                       CONNECTION_RETRY_MAX_ATTEMPTS );
-
-    /* Attempt to connect to MQTT broker. If connection fails, retry after
-     * a timeout. Timeout value will exponentially increase until maximum
-     * attempts are reached.
-     */
-    do
-    {
-        /* Establish a TLS session with the MQTT broker. This example connects
-         * to the MQTT broker as specified in AWS_IOT_ENDPOINT and AWS_MQTT_PORT
-         * at the demo config header. */
-        LogInfo( ( "Establishing a TLS session to %.*s:%d.",
-                   pServerInfo->hostNameLength,
-                   pServerInfo->pHostName,
-                   pServerInfo->port ) );
-        opensslStatus = Openssl_Connect( pNetworkContext,
-                                         pServerInfo,
-                                         &opensslCredentials,
-                                         TRANSPORT_SEND_RECV_TIMEOUT_MS,
-                                         TRANSPORT_SEND_RECV_TIMEOUT_MS );
-
-        if( opensslStatus != OPENSSL_SUCCESS )
-        {
-            /* Generate a random number and get back-off value (in milliseconds) for the next connection retry. */
-            backoffAlgStatus = BackoffAlgorithm_GetNextBackoff( &reconnectParams, generateRandomNumber(), &nextRetryBackOff );
-
-            if( backoffAlgStatus == BackoffAlgorithmRetriesExhausted )
-            {
-                LogError( ( "Connection to the broker failed, all attempts exhausted." ) );
-                returnStatus = EXIT_FAILURE;
-            }
-            else if( backoffAlgStatus == BackoffAlgorithmSuccess )
-            {
-                LogWarn( ( "Connection to the broker failed. Retrying connection "
-                           "after %hu ms backoff.",
-                           ( unsigned short ) nextRetryBackOff ) );
-                Clock_SleepMs( nextRetryBackOff );
-            }
-        }
-    } while( ( opensslStatus != OPENSSL_SUCCESS ) && ( backoffAlgStatus == BackoffAlgorithmSuccess ) );
-
-    return returnStatus;
-}
-
-/*-----------------------------------------------------------*/
-
-static int retriveGGCoreInfo( ServerInfo_t * pServerInfo )
-{
-    /* Return value of main. */
-    int32_t returnStatus = EXIT_SUCCESS;
-    /* The transport layer interface used by the HTTP Client library. */
-    TransportInterface_t transportInterface;
-    /* The network context for the transport layer interface. */
-    NetworkContext_t networkContext;
-    OpensslParams_t opensslParams;
-    char * pcJSONFile = NULL;
-    uint32_t * ulJSONFileLength = 0;
-    OpensslCredentials_t OpensslCredentials = { 0 };
-
-    /* Set the pParams member of the network context with desired transport. */
-    networkContext.pParams = &opensslParams;
-
-    /**************************** Connect. ******************************/
-
-    /* Establish TLS connection on top of TCP connection using OpenSSL. */
-    if( returnStatus == EXIT_SUCCESS )
-    {
-        LogInfo( ( "Performing TLS handshake on top of the TCP connection." ) );
-
-        /* Attempt to connect to the HTTP server. If connection fails, retry after
-         * a timeout. Timeout value will be exponentially increased till the maximum
-         * attempts are reached or maximum timeout value is reached. The function
-         * returns EXIT_FAILURE if the TCP connection cannot be established to
-         * broker after configured number of attempts. */
-        returnStatus = connectToServerWithBackoffRetries( connectToServerHTTP,
-                                                          &networkContext );
-
-        if( returnStatus == EXIT_FAILURE )
-        {
-            /* Log error to indicate connection failure after all
-             * reconnect attempts are over. */
-            LogError( ( "Failed to connect to HTTP server %.*s.",
-                        ( int32_t ) AWS_IOT_ENDPOINT_LENGTH,
-                        AWS_IOT_ENDPOINT ) );
-        }
-    }
-
-    /* Define the transport interface. */
-    if( returnStatus == EXIT_SUCCESS )
-    {
-        ( void ) memset( &transportInterface, 0, sizeof( transportInterface ) );
-        transportInterface.recv = Openssl_Recv;
-        transportInterface.send = Openssl_Send;
-        transportInterface.pNetworkContext = &networkContext;
-    }
-
-    /*********************** Send HTTPS request. ************************/
-
-    if( returnStatus == EXIT_SUCCESS )
-    {
-        returnStatus = sendHttpRequest( &transportInterface,
-                                        HTTP_METHOD_GET,
-                                        strlen( HTTP_METHOD_GET ),
-                                        GET_PATH,
-                                        strlen( GET_PATH ),
-                                        &pcJSONFile,
-                                        &ulJSONFileLength );
-    }
-
-    /************************** Disconnect. *****************************/
-
-    /* End TLS session, then close TCP connection. */
-    ( void ) Openssl_Disconnect( &networkContext );
-
-    if( returnStatus == EXIT_SUCCESS )
-    {
-        /* Parse the retrieved JSON to get the GG Core certificate. */
-        returnStatus = prvGGDGetCertificate( pcJSONFile,
-                                             ulJSONFileLength,
-                                             &OpensslCredentials.pRootCaPath );
-    }
-
-    if( returnStatus == EXIT_SUCCESS )
-    {
-        LogInfo( ( "The root ca path is %s.", OpensslCredentials.pRootCaPath ) );
-        /* Parse the retrieved JSON to get the GG Core certificate. */
-        returnStatus = prvGGDGetIPOnInterface( pcJSONFile,
-                                               ulJSONFileLength,
-                                               pServerInfo );
-    }
-
-    return returnStatus;
-}
-
-/*-----------------------------------------------------------*/
+/******************** MQTT funtions ****************************/
 
 static void eventCallback( MQTTContext_t * pMqttContext,
                            MQTTPacketInfo_t * pPacketInfo,
@@ -860,6 +674,100 @@ static int mqttPublishLoop( MQTTContext_t * pxMQTTContext )
 
 /*-----------------------------------------------------------*/
 
+static int retriveGGCoreInfo( ServerInfo_t * pServerInfo )
+{
+    /* Return value of main. */
+    int32_t returnStatus = EXIT_SUCCESS;
+    /* The transport layer interface used by the HTTP Client library. */
+    TransportInterface_t transportInterface;
+    /* The network context for the transport layer interface. */
+    NetworkContext_t networkContext;
+    OpensslParams_t opensslParams;
+    char * pcJSONFile = NULL;
+    uint32_t ulJSONFileLength = 0;
+    OpensslCredentials_t OpensslCredentials = { 0 };
+
+    /* Set the pParams member of the network context with desired transport. */
+    networkContext.pParams = &opensslParams;
+
+    /**************************** Connect. ******************************/
+
+    /* Establish TLS connection on top of TCP connection using OpenSSL. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        LogInfo( ( "Performing TLS handshake on top of the TCP connection." ) );
+
+        /* Attempt to connect to the HTTP server. If connection fails, retry after
+         * a timeout. Timeout value will be exponentially increased till the maximum
+         * attempts are reached or maximum timeout value is reached. The function
+         * returns EXIT_FAILURE if the TCP connection cannot be established to
+         * broker after configured number of attempts. */
+        /* Initialize server information. */
+        serverInfo.pHostName = AWS_IOT_ENDPOINT;
+        serverInfo.hostNameLength = AWS_IOT_ENDPOINT_LENGTH;
+        serverInfo.port = AWS_HTTPS_PORT;
+        rootCAFilePath = ROOT_CA_CERT_PATH;
+        returnStatus = connectToServerWithBackoffRetries( connectToServer,
+                                                          &networkContext );
+
+        if( returnStatus == EXIT_FAILURE )
+        {
+            /* Log error to indicate connection failure after all
+             * reconnect attempts are over. */
+            LogError( ( "Failed to connect to HTTP server %.*s.",
+                        ( int32_t ) AWS_IOT_ENDPOINT_LENGTH,
+                        AWS_IOT_ENDPOINT ) );
+        }
+    }
+
+    /* Define the transport interface. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        ( void ) memset( &transportInterface, 0, sizeof( transportInterface ) );
+        transportInterface.recv = Openssl_Recv;
+        transportInterface.send = Openssl_Send;
+        transportInterface.pNetworkContext = &networkContext;
+    }
+
+    /*********************** Send HTTPS request. ************************/
+
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        returnStatus = sendHttpRequest( &transportInterface,
+                                        HTTP_METHOD_GET,
+                                        strlen( HTTP_METHOD_GET ),
+                                        GET_PATH,
+                                        strlen( GET_PATH ),
+                                        &pcJSONFile,
+                                        &ulJSONFileLength );
+    }
+
+    /************************** Disconnect. *****************************/
+
+    /* End TLS session, then close TCP connection. */
+    ( void ) Openssl_Disconnect( &networkContext );
+
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        /* Parse the retrieved JSON to get the GG Core certificate. */
+        returnStatus = prvGGDGetCertificate( pcJSONFile,
+                                             ulJSONFileLength );
+    }
+
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        LogInfo( ( "The root ca file path is %s.", GG_ROOT_CA_PATH ) );
+        /* Parse the retrieved JSON to get the GG Core certificate. */
+        returnStatus = prvGGDGetIPOnInterface( pcJSONFile,
+                                               ulJSONFileLength,
+                                               pServerInfo );
+    }
+
+    return returnStatus;
+}
+
+/*-----------------------------------------------------------*/
+
 /**
  * @brief Entry point of demo.
  *
@@ -884,14 +792,13 @@ int main( int argc,
     NetworkContext_t networkContext = { 0 };
     OpensslParams_t opensslParams = { 0 };
 
+    ServerInfo_t xServerInfo = { 0 };
+
     /* MQTT params.*/
     MQTTStatus_t mqttStatus = MQTTSuccess;
     MQTTContext_t mqttContext = { 0 };
     MQTTFixedBuffer_t mqttBuffer = { 0 };
     bool sessionPresent = false;
-
-    /* GGCore Server info. */
-    ServerInfo_t xServerInfo = { 0 };
 
 
     ( void ) argc;
@@ -901,14 +808,13 @@ int main( int argc,
     networkContext.pParams = &opensslParams;
 
     /* Retrieve Greengrass core connection info using an HTTP GET request. */
-    returnStatus = retriveGGCoreInfo( &xServerInfo );
+    returnStatus = retriveGGCoreInfo( &serverInfo );
 
     /********************* Connect to GG Core ******************************/
     if( returnStatus == EXIT_SUCCESS )
     {
-        returnStatus = connectToServer( &networkContext,
-                                        &xServerInfo,
-                                        GG_ROOT_CA_PATH );
+        rootCAFilePath = GG_ROOT_CA_PATH;
+        returnStatus = connectToServer( &networkContext );
     }
 
     /**********************MQTT Operations *********************************/

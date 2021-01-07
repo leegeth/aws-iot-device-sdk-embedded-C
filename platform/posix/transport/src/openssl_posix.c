@@ -234,14 +234,15 @@ static OpensslStatus_t tlsHandshake( const ServerInfo_t * pServerInfo,
     int sslError;
 
     /* Validate the hostname against the server's certificate. */
-    /*sslStatus = SSL_set1_host( pOpensslParams->pSsl,
-                               pServerInfo->pHostName );
 
-    if( sslStatus != 1 )
-    {
-        LogError( ( "SSL_set1_host failed to set the hostname to validate." ) );
-        returnStatus = OPENSSL_API_ERROR;
-    }*/
+    /*sslStatus = SSL_set1_host( pOpensslParams->pSsl,
+     *                         pServerInfo->pHostName );
+     *
+     * if( sslStatus != 1 )
+     * {
+     *  LogError( ( "SSL_set1_host failed to set the hostname to validate." ) );
+     *  returnStatus = OPENSSL_API_ERROR;
+     * }*/
 
     /* Enable SSL peer verification. */
     if( returnStatus == OPENSSL_SUCCESS )
@@ -269,11 +270,11 @@ static OpensslStatus_t tlsHandshake( const ServerInfo_t * pServerInfo,
         {
             sslError = SSL_get_error( pOpensslParams->pSsl, sslStatus );
             LogError( ( "SSL_connect failed to perform TLS handshake. Error=%d.", sslError ) );
-            LogError(( "Reason error string = %s, Lib Errro String=%s, Function error string=%s, Error string=%s.",
-                     ERR_reason_error_string( sslError ),
-                     ERR_lib_error_string( sslError),
-                     ERR_func_error_string( sslError ),
-                     ERR_error_string(sslError, NULL) ) );
+            LogError( ( "Reason error string = %s, Lib Errro String=%s, Function error string=%s, Error string=%s.",
+                        ERR_reason_error_string( sslError ),
+                        ERR_lib_error_string( sslError ),
+                        ERR_func_error_string( sslError ),
+                        ERR_error_string( sslError, NULL ) ) );
             returnStatus = OPENSSL_HANDSHAKE_FAILED;
         }
     }
@@ -339,9 +340,9 @@ static int32_t setRootCa( const SSL_CTX * pSslContext,
     if( sslStatus == 1 )
     {
         /* Add the certificate to the context. */
-        //sslStatus = X509_STORE_add_cert( SSL_CTX_get_cert_store( pSslContext ),
-        //                                 pRootCa );
-        sslStatus = SSL_CTX_load_verify_locations( pSslContext, pRootCaPath, NULL);
+        /*sslStatus = X509_STORE_add_cert( SSL_CTX_get_cert_store( pSslContext ), */
+        /*                                 pRootCa ); */
+        sslStatus = SSL_CTX_load_verify_locations( ( SSL_CTX * ) pSslContext, pRootCaPath, NULL );
 
         if( sslStatus != 1 )
         {
