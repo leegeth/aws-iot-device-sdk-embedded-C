@@ -51,6 +51,9 @@
 /* OpenSSL transport header. */
 #include "openssl_posix.h"
 
+/* Clock for timer. */
+#include "clock.h"
+
 /* Check that AWS IoT Core endpoint is defined. */
 #ifndef AWS_IOT_ENDPOINT
     #error "AWS_IOT_ENDPOINT must be defined to your AWS IoT Core endpoint."
@@ -100,26 +103,36 @@
 
 /* Path to store the GG Core certificate. */
 #ifndef GG_ROOT_CA_PATH
-    #define GG_ROOT_CA_PATH    "certificates/GGCoreCertificate.crt"
+    #define GG_ROOT_CA_PATH                      "certificates/GGCoreCertificate.crt"
 #endif
 
-#define GG_ROOT_CA_PATH_TEST "certificates/GGCoreCertificateWithoutModification"
+#define GG_ROOT_CA_PATH_TEST                     "certificates/GGCoreCertificateWithoutModification"
+
+/* GG Core MQTT publish messages. */
+#define ggdDEMO_MAX_MQTT_MESSAGES                3
+#define ggdDEMO_MAX_MQTT_MSG_SIZE                500
+#define ggdDEMO_MQTT_MSG_TOPIC                   "freertos/demos/ggd"
+#define ggdDEMO_MQTT_MSG_DISCOVERY               "{\"message\":\"Hello #%lu from FreeRTOS to Greengrass Core.\"}"
 
 /**
  * @brief The length of the AWS IoT Endpoint.
  */
-#define AWS_IOT_ENDPOINT_LENGTH    ( sizeof( AWS_IOT_ENDPOINT ) - 1 )
+#define AWS_IOT_ENDPOINT_LENGTH                  ( sizeof( AWS_IOT_ENDPOINT ) - 1 )
 
 /**
  * @brief The length of the HTTP POST method.
  */
-#define HTTP_METHOD_POST_LENGTH    ( sizeof( HTTP_METHOD_POST ) - 1 )
+#define HTTP_METHOD_POST_LENGTH                  ( sizeof( HTTP_METHOD_POST ) - 1 )
 
 /**
  * @brief The length of the HTTP POST path.
  */
-#define POST_PATH_LENGTH           ( sizeof( POST_PATH ) - 1 )
+#define POST_PATH_LENGTH                         ( sizeof( POST_PATH ) - 1 )
 
+/**
+ * @brief Length of client identifier.
+ */
+#define CLIENT_IDENTIFIER_LENGTH                 ( ( uint16_t ) ( sizeof( CLIENT_IDENTIFIER ) - 1 ) )
 
 /**
  * @brief The maximum number of retries for connecting to server.
@@ -140,6 +153,27 @@
  * @brief Timeout for receiving CONNACK packet in milli seconds.
  */
 #define CONNACK_RECV_TIMEOUT_MS                  ( 1000U )
+
+/**
+ * @brief The maximum time interval in seconds which is allowed to elapse
+ *  between two Control Packets.
+ *
+ *  It is the responsibility of the Client to ensure that the interval between
+ *  Control Packets being sent does not exceed the this Keep Alive value. In the
+ *  absence of sending any other Control Packets, the Client MUST send a
+ *  PINGREQ Packet.
+ */
+#define MQTT_KEEP_ALIVE_INTERVAL_SECONDS         ( 60U )
+
+/**
+ * @brief The MQTT metrics string expected by AWS IoT.
+ */
+#define METRICS_STRING                           "?SDK=" OS_NAME "&Version=" OS_VERSION "&Platform=" HARDWARE_PLATFORM_NAME "&MQTTLib=" MQTT_LIB
+
+/**
+ * @brief The length of the MQTT metrics string expected by AWS IoT.
+ */
+#define METRICS_STRING_LENGTH                    ( ( uint16_t ) ( sizeof( METRICS_STRING ) - 1 ) )
 
 /**
  * @brief A buffer used in the demo for storing HTTP request headers and
@@ -389,7 +423,7 @@ static void prvConvertCertificateJSONToString( char * certbuf,
     fd = fopen( GG_ROOT_CA_PATH, "w" );
 
     /* Write to the file. */
-    fwrite( certbuf, sizeof(char), ulWriteIndex, fd );
+    fwrite( certbuf, sizeof( char ), ulWriteIndex, fd );
 
     fclose( fd );
 }
@@ -429,7 +463,7 @@ static int32_t prvGGDGetCertificate( char * pcJSONFile,
         prvConvertCertificateJSONToString( certbuf, valueLength );
         *pucCert = GG_ROOT_CA_PATH;
         returnStatus = EXIT_SUCCESS;
-        free(certbuf);
+        free( certbuf );
     }
 
     return returnStatus;
@@ -524,7 +558,7 @@ static int connectToServer( NetworkContext_t * pNetworkContext,
     BackoffAlgorithmContext_t reconnectParams;
     OpensslCredentials_t opensslCredentials;
     uint16_t nextRetryBackOff;
-    
+
     /* Initialize credentials for establishing TLS session. */
     memset( &opensslCredentials, 0, sizeof( OpensslCredentials_t ) );
     opensslCredentials.pRootCaPath = GG_ROOT_CA_PATH;
@@ -539,7 +573,7 @@ static int connectToServer( NetworkContext_t * pNetworkContext,
      * the complete endpoint address in the host_name field. Details about
      * SNI for AWS IoT can be found in the link below.
      * https://docs.aws.amazon.com/iot/latest/developerguide/transport-security.html */
-    //opensslCredentials.sniHostName = AWS_IOT_ENDPOINT;
+    opensslCredentials.sniHostName = pServerInfo->pHostName;
 
     /* Initialize reconnect attempts and interval */
     BackoffAlgorithm_InitializeParams( &reconnectParams,
@@ -591,21 +625,7 @@ static int connectToServer( NetworkContext_t * pNetworkContext,
 
 /*-----------------------------------------------------------*/
 
-/**
- * @brief Entry point of demo.
- *
- * This example resolves the AWS IoT Core endpoint, establishes a TCP connection,
- * performs a mutually authenticated TLS handshake occurs such that all further
- * communication is encrypted. After which, HTTP Client Library API is used to
- * make a POST request to AWS IoT Core in order to publish a message to a topic
- * named topic with QoS=1 so that all clients subscribed to the topic receive
- * the message at least once. Any possible errors are also logged.
- *
- * @note This example is single-threaded and uses statically allocated memory.
- *
- */
-int main( int argc,
-          char ** argv )
+static int retriveGGCoreInfo( ServerInfo_t * pServerInfo )
 {
     /* Return value of main. */
     int32_t returnStatus = EXIT_SUCCESS;
@@ -616,14 +636,7 @@ int main( int argc,
     OpensslParams_t opensslParams;
     char * pcJSONFile = NULL;
     uint32_t * ulJSONFileLength = 0;
-
-    /* MQTT specific credentials. */
-    ServerInfo_t xServerInfo = { 0 };
     OpensslCredentials_t OpensslCredentials = { 0 };
-
-
-    ( void ) argc;
-    ( void ) argv;
 
     /* Set the pParams member of the network context with desired transport. */
     networkContext.pParams = &opensslParams;
@@ -694,20 +707,260 @@ int main( int argc,
         /* Parse the retrieved JSON to get the GG Core certificate. */
         returnStatus = prvGGDGetIPOnInterface( pcJSONFile,
                                                ulJSONFileLength,
-                                               &xServerInfo );
+                                               pServerInfo );
+    }
+
+    return returnStatus;
+}
+
+/*-----------------------------------------------------------*/
+
+static void eventCallback( MQTTContext_t * pMqttContext,
+                           MQTTPacketInfo_t * pPacketInfo,
+                           MQTTDeserializedInfo_t * pDeserializedInfo )
+{
+    if( ( pPacketInfo->type & 0xF0U ) == MQTT_PACKET_TYPE_PUBLISH )
+    {
+        LogInfo( ( "Incoming publish received." ) );
+    }
+    else
+    {
+        LogInfo( ( "Incoming packet type is %02X.", pPacketInfo->type ) );
+    }
+}
+
+/*-----------------------------------------------------------*/
+
+static int establishMqttSession( MQTTContext_t * pMqttContext,
+                                 bool createCleanSession,
+                                 bool * pSessionPresent )
+{
+    int returnStatus = EXIT_SUCCESS;
+    MQTTStatus_t mqttStatus;
+    MQTTConnectInfo_t connectInfo = { 0 };
+
+    assert( pMqttContext != NULL );
+    assert( pSessionPresent != NULL );
+
+    /* Establish MQTT session by sending a CONNECT packet. */
+
+    /* If #createCleanSession is true, start with a clean session
+     * i.e. direct the MQTT broker to discard any previous session data.
+     * If #createCleanSession is false, directs the broker to attempt to
+     * reestablish a session which was already present. */
+    connectInfo.cleanSession = createCleanSession;
+
+    /* The client identifier is used to uniquely identify this MQTT client to
+     * the MQTT broker. In a production device the identifier can be something
+     * unique, such as a device serial number. */
+    connectInfo.pClientIdentifier = IOT_THING_NAME;
+    connectInfo.clientIdentifierLength = strlen( IOT_THING_NAME );
+
+    /* The maximum time interval in seconds which is allowed to elapse
+     * between two Control Packets.
+     * It is the responsibility of the Client to ensure that the interval between
+     * Control Packets being sent does not exceed the this Keep Alive value. In the
+     * absence of sending any other Control Packets, the Client MUST send a
+     * PINGREQ Packet. */
+    connectInfo.keepAliveSeconds = MQTT_KEEP_ALIVE_INTERVAL_SECONDS;
+
+    /* Use the username and password for authentication, if they are defined.
+     * Refer to the AWS IoT documentation below for details regarding client
+     * authentication with a username and password.
+     * https://docs.aws.amazon.com/iot/latest/developerguide/enhanced-custom-authentication.html
+     * An authorizer setup needs to be done, as mentioned in the above link, to use
+     * username/password based client authentication.
+     *
+     * The username field is populated with voluntary metrics to AWS IoT.
+     * The metrics collected by AWS IoT are the operating system, the operating
+     * system's version, the hardware platform, and the MQTT Client library
+     * information. These metrics help AWS IoT improve security and provide
+     * better technical support.
+     *
+     * If client authentication is based on username/password in AWS IoT,
+     * the metrics string is appended to the username to support both client
+     * authentication and metrics collection. */
+    #ifdef CLIENT_USERNAME
+        connectInfo.pUserName = CLIENT_USERNAME_WITH_METRICS;
+        connectInfo.userNameLength = strlen( CLIENT_USERNAME_WITH_METRICS );
+        connectInfo.pPassword = CLIENT_PASSWORD;
+        connectInfo.passwordLength = strlen( CLIENT_PASSWORD );
+    #else
+        connectInfo.pUserName = METRICS_STRING;
+        connectInfo.userNameLength = METRICS_STRING_LENGTH;
+        /* Password for authentication is not used. */
+        connectInfo.pPassword = NULL;
+        connectInfo.passwordLength = 0U;
+    #endif /* ifdef CLIENT_USERNAME */
+
+    /* Send MQTT CONNECT packet to broker. */
+    mqttStatus = MQTT_Connect( pMqttContext, &connectInfo, NULL, CONNACK_RECV_TIMEOUT_MS, pSessionPresent );
+
+    if( mqttStatus != MQTTSuccess )
+    {
+        returnStatus = EXIT_FAILURE;
+        LogError( ( "Connection with MQTT broker failed with status %s.",
+                    MQTT_Status_strerror( mqttStatus ) ) );
+    }
+    else
+    {
+        LogInfo( ( "MQTT connection successfully established with broker.\n\n" ) );
+    }
+
+    return returnStatus;
+}
+
+/*-----------------------------------------------------------*/
+
+static int mqttPublishLoop( MQTTContext_t * pxMQTTContext )
+{
+    const char * pcTopic = ggdDEMO_MQTT_MSG_TOPIC;
+    uint32_t ulMessageCounter;
+    char cBuffer[ ggdDEMO_MAX_MQTT_MSG_SIZE ];
+    MQTTStatus_t xResult;
+    MQTTPublishInfo_t xMQTTPublishInfo;
+    int returnStatus = EXIT_SUCCESS;
+    uint16_t usPublishPacketIdentifier;
+
+    /* Some fields are not used by this demo so start with everything at 0. */
+    ( void ) memset( ( void * ) &xMQTTPublishInfo, 0x00, sizeof( xMQTTPublishInfo ) );
+
+    /* This demo uses QoS0. */
+    xMQTTPublishInfo.qos = MQTTQoS0;
+    xMQTTPublishInfo.retain = false;
+    xMQTTPublishInfo.pTopicName = pcTopic;
+    xMQTTPublishInfo.topicNameLength = ( uint16_t ) strlen( pcTopic );
+
+    for( ulMessageCounter = 0; ulMessageCounter < ( uint32_t ) ggdDEMO_MAX_MQTT_MESSAGES; ulMessageCounter++ )
+    {
+        xMQTTPublishInfo.pPayload = ( const void * ) cBuffer;
+        xMQTTPublishInfo.payloadLength = ( uint32_t ) sprintf( cBuffer, ggdDEMO_MQTT_MSG_DISCOVERY, ( long unsigned int ) ulMessageCounter );
+
+        /* Get a unique packet id. */
+        usPublishPacketIdentifier = MQTT_GetPacketId( pxMQTTContext );
+
+        /* Send PUBLISH packet. Packet ID is not used for a QoS1 publish. */
+        xResult = MQTT_Publish( pxMQTTContext, &xMQTTPublishInfo, usPublishPacketIdentifier );
+
+        if( xResult != MQTTSuccess )
+        {
+            returnStatus = EXIT_FAILURE;
+            LogError( ( "Failed to send PUBLISH message to broker: Topic=%s, Error=%s",
+                        pcTopic,
+                        MQTT_Status_strerror( xResult ) ) );
+        }
+        else
+        {
+            LogInfo( ( "Sent PUBLISH message %d to broker: Topic=%s", ulMessageCounter, pcTopic ) );
+        }
+    }
+
+    return returnStatus;
+}
+
+/*-----------------------------------------------------------*/
+
+/**
+ * @brief Entry point of demo.
+ *
+ * This example resolves the AWS IoT Core endpoint, establishes a TCP connection,
+ * performs a mutually authenticated TLS handshake occurs such that all further
+ * communication is encrypted. After which, HTTP Client Library API is used to
+ * make a POST request to AWS IoT Core in order to publish a message to a topic
+ * named topic with QoS=1 so that all clients subscribed to the topic receive
+ * the message at least once. Any possible errors are also logged.
+ *
+ * @note This example is single-threaded and uses statically allocated memory.
+ *
+ */
+int main( int argc,
+          char ** argv )
+{
+    /* Return value of main. */
+    int32_t returnStatus = EXIT_SUCCESS;
+    /* The transport layer interface used by the HTTP Client library. */
+    TransportInterface_t transportInterface = { 0 };
+    /* The network context for the transport layer interface. */
+    NetworkContext_t networkContext = { 0 };
+    OpensslParams_t opensslParams = { 0 };
+
+    /* MQTT params.*/
+    MQTTStatus_t mqttStatus = MQTTSuccess;
+    MQTTContext_t mqttContext = { 0 };
+    MQTTFixedBuffer_t mqttBuffer = { 0 };
+    bool sessionPresent = false;
+
+    /* GGCore Server info. */
+    ServerInfo_t xServerInfo = { 0 };
+
+
+    ( void ) argc;
+    ( void ) argv;
+
+    /* Set the pParams member of the network context with desired transport. */
+    networkContext.pParams = &opensslParams;
+
+    /* Retrieve Greengrass core connection info using an HTTP GET request. */
+    returnStatus = retriveGGCoreInfo( &xServerInfo );
+
+    /********************* Connect to GG Core ******************************/
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        returnStatus = connectToServer( &networkContext,
+                                        &xServerInfo,
+                                        GG_ROOT_CA_PATH );
     }
 
     /**********************MQTT Operations *********************************/
+
+    /* Define the transport interface and initialize MQTT. */
     if( returnStatus == EXIT_SUCCESS )
     {
-        memset(&networkContext,0, sizeof(networkContext));
-        /* Set the pParams member of the network context with desired transport. */
-        networkContext.pParams = &opensslParams;
+        ( void ) memset( &transportInterface, 0, sizeof( transportInterface ) );
+        transportInterface.recv = Openssl_Recv;
+        transportInterface.send = Openssl_Send;
+        transportInterface.pNetworkContext = &networkContext;
 
-        returnStatus = connectToServer( &networkContext,
-                                        &xServerInfo,
-                                        OpensslCredentials.pRootCaPath );
+        /* The buffer for MQTT and HTTP can be shared as only one at a time is being used*/
+        mqttBuffer.pBuffer = userBuffer;
+        mqttBuffer.size = USER_BUFFER_LENGTH;
+
+        /* Initialize MQTT. */
+        mqttStatus = MQTT_Init( &mqttContext, &transportInterface, Clock_GetTimeMs, eventCallback, &mqttBuffer );
+
+        if( mqttStatus != MQTTSuccess )
+        {
+            LogError( ( "MQTT_Init failed with error %d.", mqttStatus ) );
+            returnStatus = EXIT_FAILURE;
+        }
     }
+
+    /* Establish an MQTT session. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        returnStatus = establishMqttSession( &mqttContext, true, &sessionPresent );
+    }
+
+    /* MQTT publish loop. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        returnStatus = mqttPublishLoop( &mqttContext );
+    }
+
+    /* Disconnect MQTT connection. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        mqttStatus = MQTT_Disconnect( &mqttContext );
+
+        if( mqttStatus != MQTTSuccess )
+        {
+            LogError( ( "MQTT_Disconnect failed with error %d.", mqttStatus ) );
+            returnStatus = EXIT_FAILURE;
+        }
+    }
+
+    /* End TLS session, then close TCP connection. */
+    ( void ) Openssl_Disconnect( &networkContext );
 
     if( returnStatus == EXIT_SUCCESS )
     {

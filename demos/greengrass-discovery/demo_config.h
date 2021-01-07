@@ -126,4 +126,41 @@
 #define USER_BUFFER_LENGTH                ( 2500 )
 
 
+/**
+ * @brief MQTT client identifier.
+ *
+ * No two clients may use the same client identifier simultaneously.
+ */
+#ifndef CLIENT_IDENTIFIER
+    #define CLIENT_IDENTIFIER    "testclient"
+#endif
+
+/**
+ * @brief The name of the operating system that the application is running on.
+ * The current value is given as an example. Please update for your specific
+ * operating system.
+ */
+#define OS_NAME                   "Ubuntu"
+
+/**
+ * @brief The version of the operating system that the application is running
+ * on. The current value is given as an example. Please update for your specific
+ * operating system version.
+ */
+#define OS_VERSION                "18.04 LTS"
+
+/**
+ * @brief The name of the hardware platform the application is running on. The
+ * current value is given as an example. Please update for your specific
+ * hardware platform.
+ */
+#define HARDWARE_PLATFORM_NAME    "PC"
+
+/**
+ * @brief The name of the MQTT library used and its version, following an "@"
+ * symbol.
+ */
+#include "core_mqtt.h"
+#define MQTT_LIB    "core-mqtt@" MQTT_LIBRARY_VERSION
+
 #endif /* ifndef DEMO_CONFIG_H_ */
