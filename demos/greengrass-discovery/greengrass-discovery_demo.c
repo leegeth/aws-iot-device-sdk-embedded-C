@@ -109,10 +109,10 @@
 #define GG_ROOT_CA_PATH_TEST                     "certificates/GGCoreCertificateWithoutModification"
 
 /* GG Core MQTT publish messages. */
-#define ggdDEMO_MAX_MQTT_MESSAGES                3
+#define ggdDEMO_MAX_MQTT_MESSAGES                65536
 #define ggdDEMO_MAX_MQTT_MSG_SIZE                500
 #define ggdDEMO_MQTT_MSG_TOPIC                   "freertos/demos/ggd"
-#define ggdDEMO_MQTT_MSG_DISCOVERY               "{\"message\":\"Hello #%lu from FreeRTOS to Greengrass Core.\"}"
+#define ggdDEMO_MQTT_MSG_DISCOVERY               "{\"Hello #%lu from Device using CSDK.\"}"
 
 /**
  * @brief The length of the AWS IoT Endpoint.
@@ -665,8 +665,11 @@ static int mqttPublishLoop( MQTTContext_t * pxMQTTContext )
         }
         else
         {
-            LogInfo( ( "Sent PUBLISH message %d to broker: Topic=%s", ulMessageCounter, pcTopic ) );
+            LogInfo( ( "Sent PUBLISH Topic=%s, payload=%s", pcTopic, cBuffer ) );
         }
+
+        /* Wait for a second before the next publish. */
+        Clock_SleepMs( 3000 );
     }
 
     return returnStatus;
