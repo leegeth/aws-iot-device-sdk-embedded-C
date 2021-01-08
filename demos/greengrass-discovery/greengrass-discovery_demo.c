@@ -103,56 +103,68 @@
 
 /* Path to store the GG Core certificate. */
 #ifndef GG_ROOT_CA_PATH
-    #define GG_ROOT_CA_PATH                      "certificates/GGCoreCertificate.crt"
+    #define GG_ROOT_CA_PATH                        "certificates/GGCoreCertificate.crt"
 #endif
 
-#define GG_ROOT_CA_PATH_TEST                     "certificates/GGCoreCertificateWithoutModification"
+#define GG_ROOT_CA_PATH_TEST                       "certificates/GGCoreCertificateWithoutModification"
 
 /* GG Core MQTT publish messages. */
-#define ggdDEMO_MAX_MQTT_MESSAGES                65536
-#define ggdDEMO_MAX_MQTT_MSG_SIZE                500
-#define ggdDEMO_MQTT_MSG_TOPIC                   "freertos/demos/ggd"
-#define ggdDEMO_MQTT_MSG_DISCOVERY               "{\"Hello #%lu from Device using CSDK.\"}"
+#define ggdDEMO_MAX_MQTT_MESSAGES                  65536
+#define ggdDEMO_MAX_MQTT_MSG_SIZE                  500
+#define ggdDEMO_MQTT_MSG_TOPIC                     "freertos/demos/ggd"
+#define ggdDEMO_MQTT_MSG_DISCOVERY                 "{\"Hello #%lu from Device using CSDK.\"}"
+#define ggdDEMO_MQTT_RESPONSE_TOPIC                ggdDEMO_MQTT_MSG_TOPIC "/response"
 
 /**
  * @brief The length of the AWS IoT Endpoint.
  */
-#define AWS_IOT_ENDPOINT_LENGTH                  ( sizeof( AWS_IOT_ENDPOINT ) - 1 )
+#define AWS_IOT_ENDPOINT_LENGTH                    ( sizeof( AWS_IOT_ENDPOINT ) - 1 )
 
 /**
  * @brief The length of the HTTP POST method.
  */
-#define HTTP_METHOD_POST_LENGTH                  ( sizeof( HTTP_METHOD_POST ) - 1 )
+#define HTTP_METHOD_POST_LENGTH                    ( sizeof( HTTP_METHOD_POST ) - 1 )
 
 /**
  * @brief The length of the HTTP POST path.
  */
-#define POST_PATH_LENGTH                         ( sizeof( POST_PATH ) - 1 )
+#define POST_PATH_LENGTH                           ( sizeof( POST_PATH ) - 1 )
 
 /**
  * @brief Length of client identifier.
  */
-#define CLIENT_IDENTIFIER_LENGTH                 ( ( uint16_t ) ( sizeof( CLIENT_IDENTIFIER ) - 1 ) )
+#define CLIENT_IDENTIFIER_LENGTH                   ( ( uint16_t ) ( sizeof( CLIENT_IDENTIFIER ) - 1 ) )
 
 /**
  * @brief The maximum number of retries for connecting to server.
  */
-#define CONNECTION_RETRY_MAX_ATTEMPTS            ( 5U )
+#define CONNECTION_RETRY_MAX_ATTEMPTS              ( 5U )
 
 /**
  * @brief The maximum back-off delay (in milliseconds) for retrying connection to server.
  */
-#define CONNECTION_RETRY_MAX_BACKOFF_DELAY_MS    ( 5000U )
+#define CONNECTION_RETRY_MAX_BACKOFF_DELAY_MS      ( 5000U )
 
 /**
  * @brief The base back-off delay (in milliseconds) to use for connection retry attempts.
  */
-#define CONNECTION_RETRY_BACKOFF_BASE_MS         ( 500U )
+#define CONNECTION_RETRY_BACKOFF_BASE_MS           ( 500U )
 
 /**
  * @brief Timeout for receiving CONNACK packet in milli seconds.
  */
-#define CONNACK_RECV_TIMEOUT_MS                  ( 1000U )
+#define CONNACK_RECV_TIMEOUT_MS                    ( 1000U )
+
+/**
+ * @brief Timeout for MQTT_ProcessLoop in milliseconds.
+ */
+#define PROCESS_LOOP_TIMEOUT_MS                    ( 700U )
+
+/**
+ * @brief The maximum number of times to call MQTT_ProcessLoop() when polling
+ * for a specific packet from the broker.
+ */
+#define MQTT_PROCESS_LOOP_PACKET_WAIT_COUNT_MAX    ( 2U )
 
 /**
  * @brief The maximum time interval in seconds which is allowed to elapse
@@ -163,17 +175,17 @@
  *  absence of sending any other Control Packets, the Client MUST send a
  *  PINGREQ Packet.
  */
-#define MQTT_KEEP_ALIVE_INTERVAL_SECONDS         ( 60U )
+#define MQTT_KEEP_ALIVE_INTERVAL_SECONDS           ( 60U )
 
 /**
  * @brief The MQTT metrics string expected by AWS IoT.
  */
-#define METRICS_STRING                           "?SDK=" OS_NAME "&Version=" OS_VERSION "&Platform=" HARDWARE_PLATFORM_NAME "&MQTTLib=" MQTT_LIB
+#define METRICS_STRING                             "?SDK=" OS_NAME "&Version=" OS_VERSION "&Platform=" HARDWARE_PLATFORM_NAME "&MQTTLib=" MQTT_LIB
 
 /**
  * @brief The length of the MQTT metrics string expected by AWS IoT.
  */
-#define METRICS_STRING_LENGTH                    ( ( uint16_t ) ( sizeof( METRICS_STRING ) - 1 ) )
+#define METRICS_STRING_LENGTH                      ( ( uint16_t ) ( sizeof( METRICS_STRING ) - 1 ) )
 
 /**
  * @brief A buffer used in the demo for storing HTTP request headers and
@@ -184,6 +196,20 @@
  * decide to use separate buffers for storing the HTTP request and response.
  */
 static uint8_t userBuffer[ USER_BUFFER_LENGTH ];
+
+/**
+ * @brief MQTT packet type received from the MQTT broker.
+ *
+ * @note Only on receiving incoming PUBLISH, SUBACK, and UNSUBACK, this
+ * variable is updated. For MQTT packets PUBACK and PINGRESP, the variable is
+ * not updated since there is no need to specifically wait for it in this demo.
+ * A single variable suffices as this demo uses single task and requests one operation
+ * (of PUBLISH, SUBSCRIBE, UNSUBSCRIBE) at a time before expecting response from
+ * the broker. Hence it is not possible to receive multiple packets of type PUBLISH,
+ * SUBACK, and UNSUBACK in a single call of #prvWaitForPacket.
+ * For a multi task application, consider a different method to wait for the packet, if needed.
+ */
+static uint16_t usPacketTypeReceived = 0U;
 
 /**
  * @brief Server information to which a TLS connection needs to be established.
@@ -536,9 +562,14 @@ static void eventCallback( MQTTContext_t * pMqttContext,
     if( ( pPacketInfo->type & 0xF0U ) == MQTT_PACKET_TYPE_PUBLISH )
     {
         LogInfo( ( "Incoming publish received." ) );
+        usPacketTypeReceived = MQTT_PACKET_TYPE_PUBLISH;
+        LogInfo( ( "Incoming publish: %.*s .......\r\n\r\n",
+                   ( int32_t ) pDeserializedInfo->pPublishInfo->payloadLength,
+                   ( char * ) pDeserializedInfo->pPublishInfo->pPayload ) );
     }
     else
     {
+        usPacketTypeReceived = pPacketInfo->type;
         LogInfo( ( "Incoming packet type is %02X.", pPacketInfo->type ) );
     }
 }
@@ -626,6 +657,105 @@ static int establishMqttSession( MQTTContext_t * pMqttContext,
 
 /*-----------------------------------------------------------*/
 
+static MQTTStatus_t prvWaitForPacket( MQTTContext_t * pxMQTTContext,
+                                      uint16_t usPacketType )
+{
+    uint8_t ucCount = 0U;
+    MQTTStatus_t xMQTTStatus = MQTTSuccess;
+
+    /* Reset the packet type received. */
+    usPacketTypeReceived = 0U;
+
+    while( ( usPacketTypeReceived != usPacketType ) &&
+           ( ucCount++ < MQTT_PROCESS_LOOP_PACKET_WAIT_COUNT_MAX ) &&
+           ( xMQTTStatus == MQTTSuccess ) )
+    {
+        /* Event callback will set #usPacketTypeReceived when receiving appropriate packet. This
+         * will wait for at most PROCESS_LOOP_TIMEOUT_MS. */
+        xMQTTStatus = MQTT_ProcessLoop( pxMQTTContext, PROCESS_LOOP_TIMEOUT_MS );
+    }
+
+    if( ( xMQTTStatus != MQTTSuccess ) || ( usPacketTypeReceived != usPacketType ) )
+    {
+        LogError( ( "MQTT_ProcessLoop failed to receive packet: Packet type=%02X, LoopDuration=%u, Status=%s",
+                    usPacketType,
+                    ( PROCESS_LOOP_TIMEOUT_MS * ucCount ),
+                    MQTT_Status_strerror( xMQTTStatus ) ) );
+    }
+
+    return xMQTTStatus;
+}
+
+/*-----------------------------------------------------------*/
+
+static int subscribeToResponseTopic( MQTTContext_t * pxMQTTContext )
+{
+    MQTTStatus_t xResult = MQTTSuccess;
+    int xStatus = EXIT_FAILURE;
+    MQTTSubscribeInfo_t xMQTTSubscription[ 1 ];
+    uint32_t ulTopicCount = 0U;
+    uint16_t usSubscribePacketIdentifier;
+
+    /* Some fields not used by this demo so start with everything at 0. */
+    ( void ) memset( ( void * ) &xMQTTSubscription, 0x00, sizeof( xMQTTSubscription ) );
+
+    /* Get a unique packet id. */
+    usSubscribePacketIdentifier = MQTT_GetPacketId( pxMQTTContext );
+
+    /* Subscribe to the mqttexampleTOPIC topic filter. This example subscribes to
+     * only one topic and uses QoS0. */
+    xMQTTSubscription[ 0 ].qos = MQTTQoS0;
+    xMQTTSubscription[ 0 ].pTopicFilter = ggdDEMO_MQTT_RESPONSE_TOPIC;
+    xMQTTSubscription[ 0 ].topicFilterLength = ( uint16_t ) strlen( ggdDEMO_MQTT_RESPONSE_TOPIC );
+
+    /* The client is now connected to the broker. Subscribe to the topic
+     * as specified in mqttexampleTOPIC at the top of this file by sending a
+     * subscribe packet then waiting for a subscribe acknowledgment (SUBACK).
+     * This client will then publish to the same topic it subscribed to, so it
+     * will expect all the messages it sends to the broker to be sent back to it
+     * from the broker. This demo uses QOS0 in Subscribe, therefore, the Publish
+     * messages received from the broker will have QOS0. */
+    LogInfo( ( "Attempt to subscribe to the MQTT topic %s.", ggdDEMO_MQTT_RESPONSE_TOPIC ) );
+    xResult = MQTT_Subscribe( pxMQTTContext,
+                              xMQTTSubscription,
+                              sizeof( xMQTTSubscription ) / sizeof( MQTTSubscribeInfo_t ),
+                              usSubscribePacketIdentifier );
+
+    if( xResult != MQTTSuccess )
+    {
+        LogError( ( "Failed to SUBSCRIBE to MQTT topic %s. Error=%s",
+                    ggdDEMO_MQTT_RESPONSE_TOPIC, MQTT_Status_strerror( xResult ) ) );
+    }
+    else
+    {
+        xStatus = EXIT_SUCCESS;
+        LogInfo( ( "SUBSCRIBE sent for topic %s to broker.", ggdDEMO_MQTT_RESPONSE_TOPIC ) );
+
+        /* Process incoming packet from the broker. After sending the subscribe, the
+         * client may receive a publish before it receives a subscribe ack. Therefore,
+         * call generic incoming packet processing function. Since this demo is
+         * subscribing to the topic to which no one is publishing, probability of
+         * receiving Publish message before subscribe ack is zero; but application
+         * must be ready to receive any packet.  This demo uses the generic packet
+         * processing function everywhere to highlight this fact. */
+        xResult = prvWaitForPacket( pxMQTTContext, MQTT_PACKET_TYPE_SUBACK );
+
+        if( xResult != MQTTSuccess )
+        {
+            xStatus = EXIT_FAILURE;
+        }
+        else
+        {
+            LogInfo( ( "Subscribed to the topic %s.", ggdDEMO_MQTT_RESPONSE_TOPIC ) );
+        }
+        
+    }
+
+    return xStatus;
+}
+
+/*-----------------------------------------------------------*/
+
 static int mqttPublishLoop( MQTTContext_t * pxMQTTContext )
 {
     const char * pcTopic = ggdDEMO_MQTT_MSG_TOPIC;
@@ -669,7 +799,10 @@ static int mqttPublishLoop( MQTTContext_t * pxMQTTContext )
         }
 
         /* Wait for a second before the next publish. */
-        Clock_SleepMs( 3000 );
+        Clock_SleepMs( 1000 );
+
+        /* Check if there is a response incoming publish.*/
+        prvWaitForPacket( pxMQTTContext, MQTT_PACKET_TYPE_PUBLISH );
     }
 
     return returnStatus;
@@ -848,6 +981,12 @@ int main( int argc,
     if( returnStatus == EXIT_SUCCESS )
     {
         returnStatus = establishMqttSession( &mqttContext, true, &sessionPresent );
+    }
+
+    /* Subscribe to response topic. */
+    if( returnStatus == EXIT_SUCCESS )
+    {
+        returnStatus = subscribeToResponseTopic( &mqttContext );
     }
 
     /* MQTT publish loop. */
