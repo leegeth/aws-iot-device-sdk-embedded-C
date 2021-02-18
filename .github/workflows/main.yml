@@ -1,0 +1,73 @@
+name: Python Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  doxygen:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Install Doxygen
+        run: |
+          wget -qO- "https://sourceforge.net/projects/doxygen/files/rel-1.8.20/doxygen-1.8.20.linux.bin.tar.gz/download" | sudo tar --strip-components=1 -xz -C /usr/local
+          sudo apt-get install -y libclang-9-dev graphviz
+      - name: Install Python3
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.7.10'
+      - name: Generate doxygen output
+        run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            echo 'Generate ZIP artifact of doxygen output'
+            python3 tools/doxygen/generate_docs.py --root . --zip
+          else
+            python3 tools/doxygen/generate_docs.py --root .
+          fi
+      - name: Upload doxygen artifact if main branch
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v2
+        with:
+          name: doxygen.zip
+          path: ./doxygen.zip
+          retention-days: 1
+  link-verifier:
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v2
+        with:
+          python-version: '3.7.10'
+      - name: Install pandoc
+        run: |
+          wget https://github.com/jgm/pandoc/releases/download/2.11/pandoc-2.11-1-amd64.deb -O pandoc.deb
+          sudo dpkg -i pandoc.deb
+          rm pandoc.deb
+      - name: Install gh
+        run: |
+          sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-key C99B11DEB97541F0
+          sudo apt-add-repository https://cli.github.com/packages
+          sudo apt update
+          sudo apt install -y gh
+      - name: Install python dependencies
+        run: |
+          sudo apt-get install -y python3-setuptools python3-pip
+          pip3 install --user bs4 requests termcolor
+      - name: Check Links
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FILES=($(find . -type f -name '*.md' | grep -E -i -v 'cbmc|cmock|third-party|3rdparty|libmosquitto' | tr '\n' ' '))
+          LINKS=($(grep -e 'https\?://' . -RIa --include='*.c' --include='*.h' --include='*.dox' \
+                --exclude-dir=.git --exclude-dir=cbmc --exclude-dir=CMock --exclude-dir=third-party --exclude-dir=3rdparty --exclude-dir=libmosquitto | \
+                grep -IoE '\b(https?|ftp|file)://[-A-Za-z0-9+&@#/%?=~_|!:,.;]*[-A-Za-z0-9+&@#/%=~_|]' | sort | uniq | \
+                grep -Fxvf tools/link-verifier/allowlist.txt | tr '\n' ' '))
+          python3 tools/link-verifier/verify-links.py -F ${FILES[@]} -L ${LINKS[@]}
+          if [ $? -ne "0" ]
+          then
+            exit 1
+          fi
