@@ -340,8 +340,9 @@ IoT_Error_t aws_iot_mqtt_internal_send_packet(AWS_IoT_Client *pClient, size_t le
 						 (length - sent),
 						 pTimer,
 						 &sentLen);
-		if(SUCCESS != rc) {
-			/* there was an error writing the data */
+		if((NETWORK_SSL_WRITE_TIMEOUT_ERROR != rc) && (SUCCESS != rc)) {
+			/* There was an error writing the data. A timeout in writing
+			 * may be retried if the pTimer is not expired. */
 			break;
 		}
 		sent += sentLen;
